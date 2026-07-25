@@ -1,0 +1,100 @@
+name: Build OrangeFox - Huawei Anne (ANE-LX3) claude i trust in you
+
+# Colocar este archivo en: .github/workflows/build-orangefox-anne.yml
+# dentro de un repositorio tuyo (puede ser un fork del propio device tree).
+
+on:
+  workflow_dispatch:
+
+env:
+  MANIFEST_URL: https://gitlab.com/OrangeFox/Manifest.git
+  MANIFEST_BRANCH: fox_9.0
+  DEVICE_TREE_URL: https://github.com/hi6250-dev/android_device_huawei_anne-twrp
+  DEVICE_TREE_BRANCH: android-9.0
+  DEVICE_PATH: device/huawei/anne
+  DEVICE_NAME: anne
+  LUNCH_COMBO: omni_anne-eng
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 340
+    steps:
+      - name: Liberar espacio en disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /opt/az /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          df -h
+
+      - name: Instalar dependencias de compilación
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison build-essential \
+            zip curl zlib1g-dev libc6-dev-i386 libx11-dev lib32z1-dev \
+            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig bc rsync \
+            ccache python2 libncurses5 libssl-dev
+
+      - name: Usar Python 2 como 'python' (lo necesitan los scripts de la rama Pie)
+        run: |
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+          python --version
+
+      - name: Instalar la herramienta 'repo'
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configurar identidad de git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@users.noreply.github.com"
+          git config --global color.ui false
+
+      - name: Sincronizar el manifest minimo fox_9.0 de OrangeFox
+        run: |
+          mkdir -p ~/fox_9.0 && cd ~/fox_9.0
+          ~/bin/repo init --depth=1 -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH"
+          ~/bin/repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags
+
+      - name: Clonar el device tree del Huawei Anne
+        run: |
+          cd ~/fox_9.0
+          git clone "$DEVICE_TREE_URL" -b "$DEVICE_TREE_BRANCH" "$DEVICE_PATH"
+
+      - name: Compilar OrangeFox
+        run: |
+          cd ~/fox_9.0
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export FOX_USE_TWRP_RECOVERY_IMAGE_BUILDER=1
+          export LC_ALL=C
+          export USE_CCACHE=1
+          export CCACHE_EXEC=$(which ccache)
+          ccache -M 20G
+          source build/envsetup.sh
+          lunch "$LUNCH_COMBO"
+          mka recoveryimage 2>&1 | tee build.log
+
+      - name: Subir el log de compilacion (siempre, sirve para depurar)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ~/fox_9.0/build.log
+
+      - name: Subir la imagen de OrangeFox
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeFox-anne-ANE-LX3
+          path: |
+            ~/fox_9.0/out/target/product/anne/*.img
+            ~/fox_9.0/out/target/product/anne/OrangeFox*.zip
+          if-no-files-found: error
+          
